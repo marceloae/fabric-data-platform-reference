@@ -10,7 +10,7 @@ Last Modified: 2024-01
 
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
-    col, sum, count, avg, max, min, round,
+    col, sum, count, avg, max, min, round, when,
     current_timestamp, date_format, year, month, dayofmonth
 )
 from pyspark.sql.window import Window
