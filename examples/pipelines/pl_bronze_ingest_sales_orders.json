@@ -1,0 +1,192 @@
+{
+  "name": "pl_bronze_ingest_sales_orders",
+  "description": "Ingest sales orders from source system to Bronze layer",
+  "activities": [
+    {
+      "name": "Check_Source_Available",
+      "type": "Validation",
+      "description": "Verify source system is available",
+      "typeProperties": {
+        "timeout": "00:05:00"
+      }
+    },
+    {
+      "name": "Get_Source_Metadata",
+      "type": "GetMetadata",
+      "description": "Retrieve metadata about source data",
+      "dependsOn": [
+        {
+          "activity": "Check_Source_Available",
+          "dependencyConditions": ["Succeeded"]
+        }
+      ],
+      "typeProperties": {
+        "dataset": {
+          "type": "Source_SQL_Orders"
+        },
+        "fieldList": ["itemCount", "lastModified"]
+      }
+    },
+    {
+      "name": "Copy_Orders_To_Bronze",
+      "type": "Copy",
+      "description": "Copy sales orders to Bronze lakehouse",
+      "dependsOn": [
+        {
+          "activity": "Get_Source_Metadata",
+          "dependencyConditions": ["Succeeded"]
+        }
+      ],
+      "inputs": [
+        {
+          "referenceName": "ds_sql_source_orders",
+          "type": "DatasetReference"
+        }
+      ],
+      "outputs": [
+        {
+          "referenceName": "ds_lakehouse_bronze_orders",
+          "type": "DatasetReference"
+        }
+      ],
+      "typeProperties": {
+        "source": {
+          "type": "SqlSource",
+          "sqlReaderQuery": "SELECT * FROM Sales.Orders WHERE ModifiedDate >= '@{pipeline().parameters.watermark_datetime}'"
+        },
+        "sink": {
+          "type": "LakehouseSink",
+          "preCopyScript": "",
+          "tableOption": "autoCreate",
+          "writeBehavior": "append"
+        },
+        "enableStaging": false,
+        "translator": {
+          "type": "TabularTranslator",
+          "mappings": [
+            {
+              "source": { "name": "OrderID" },
+              "sink": { "name": "order_id", "type": "Int64" }
+            },
+            {
+              "source": { "name": "CustomerID" },
+              "sink": { "name": "customer_id", "type": "Int64" }
+            },
+            {
+              "source": { "name": "OrderDate" },
+              "sink": { "name": "order_date", "type": "DateTime" }
+            },
+            {
+              "source": { "name": "TotalAmount" },
+              "sink": { "name": "total_amount", "type": "Decimal" }
+            },
+            {
+              "source": { "name": "Status" },
+              "sink": { "name": "status", "type": "String" }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Add_Audit_Metadata",
+      "type": "Notebook",
+      "description": "Add ingestion timestamp and source metadata",
+      "dependsOn": [
+        {
+          "activity": "Copy_Orders_To_Bronze",
+          "dependencyConditions": ["Succeeded"]
+        }
+      ],
+      "typeProperties": {
+        "notebookPath": "/notebooks/bronze_add_metadata",
+        "parameters": {
+          "table_name": "bronze_erp_orders_raw",
+          "source_system": "ERP_System",
+          "batch_id": "@{pipeline().RunId}"
+        }
+      }
+    },
+    {
+      "name": "Update_Watermark",
+      "type": "SetVariable",
+      "description": "Update watermark for incremental load",
+      "dependsOn": [
+        {
+          "activity": "Add_Audit_Metadata",
+          "dependencyConditions": ["Succeeded"]
+        }
+      ],
+      "typeProperties": {
+        "variableName": "last_watermark",
+        "value": "@{utcnow()}"
+      }
+    },
+    {
+      "name": "Log_Success",
+      "type": "WebActivity",
+      "description": "Log successful ingestion",
+      "dependsOn": [
+        {
+          "activity": "Update_Watermark",
+          "dependencyConditions": ["Succeeded"]
+        }
+      ],
+      "typeProperties": {
+        "method": "POST",
+        "url": "@{pipeline().parameters.logging_endpoint}",
+        "body": {
+          "pipeline": "@{pipeline().Pipeline}",
+          "runId": "@{pipeline().RunId}",
+          "status": "Success",
+          "recordCount": "@{activity('Copy_Orders_To_Bronze').output.rowsCopied}",
+          "timestamp": "@{utcnow()}"
+        }
+      }
+    },
+    {
+      "name": "Handle_Failure",
+      "type": "WebActivity",
+      "description": "Log failure and send alert",
+      "dependsOn": [
+        {
+          "activity": "Copy_Orders_To_Bronze",
+          "dependencyConditions": ["Failed"]
+        }
+      ],
+      "typeProperties": {
+        "method": "POST",
+        "url": "@{pipeline().parameters.alert_endpoint}",
+        "body": {
+          "pipeline": "@{pipeline().Pipeline}",
+          "runId": "@{pipeline().RunId}",
+          "status": "Failed",
+          "error": "@{activity('Copy_Orders_To_Bronze').error.message}",
+          "timestamp": "@{utcnow()}"
+        }
+      }
+    }
+  ],
+  "parameters": {
+    "watermark_datetime": {
+      "type": "String",
+      "defaultValue": "1900-01-01T00:00:00Z"
+    },
+    "logging_endpoint": {
+      "type": "String"
+    },
+    "alert_endpoint": {
+      "type": "String"
+    }
+  },
+  "variables": {
+    "last_watermark": {
+      "type": "String"
+    }
+  },
+  "annotations": [
+    "Bronze Ingestion",
+    "Sales Orders",
+    "Incremental Load"
+  ]
+}
